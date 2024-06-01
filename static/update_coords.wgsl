@@ -10,15 +10,17 @@ struct Params {
 
 @compute @workgroup_size(1)
 fn update_coords(@builtin(global_invocation_id) id: vec3<u32>) {
-    let j = id.x;
-    if j >= params.N {
-        return;
-    }
+    // let j = id.x;
+    // if j >= params.N {
+    //     return;
+    // }
+    // // coords[j].x += 2.0;
+    // // coords[j].y += 2.0;
 
-    let xi = coords[params.pivot_idx];
-    let xj = coords[j];
-    let rij = dist_matrix[params.pivot_idx * params.N + j];
+    // let xi = coords[params.pivot_idx];
+    // let xj = coords[j];
+    // let rij = dist_matrix[params.pivot_idx * params.N + j];
 
-    let dij = sqrt((xi.x - xj.x) * (xi.x - xj.x) + (xi.y - xj.y) * (xi.y - xj.y));
-    coords[j] -= (xi - xj) * params.learning_rate * (rij - dij) / (dij + 1e-6);
+    // let dij = sqrt((xi.x - xj.x) * (xi.x - xj.x) + (xi.y - xj.y) * (xi.y - xj.y));
+    // coords[j] -= (xi - xj) * params.learning_rate * (rij - dij) / (dij + 1e-6);
 }

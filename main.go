@@ -77,13 +77,23 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	w.Write(jsonOutput)
 }
 
+func noCacheHandler(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Set headers to prevent caching
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		w.Header().Set("Surrogate-Control", "no-store")
+
+		// Serve the request
+		h.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 	http.HandleFunc("/clone", handler)
-	// http.HandleFunc("/double.wgsl", func(w http.ResponseWriter, r *http.Request) {
-	// 	w.Header().Set("Content-Type", "text/plain")
-	// 	http.ServeFile(w, r, "./static/double.wgsl")
-	// })
-	http.Handle("/", http.FileServer(http.Dir("./static")))
+	// Serve files without caching
+	http.Handle("/", noCacheHandler(http.FileServer(http.Dir("./static"))))
 	fmt.Println("Server is listening on port 8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
