@@ -5,21 +5,38 @@
     <meta charset="UTF-8">
     <title>GitHub Repo Analyzer</title>
     <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            width: 100%;
+        }
+
+        #plot {
+            height: 100%;
+            width: 100%;
+            background-color: red;
+        }
+    </style>
 </head>
 
 <body>
     <h1>GitHub Repo Analyzer</h1>
     <input type="text" id="repo-url" placeholder="Enter GitHub repo URL" value="https://github.com/elixir-lang/elixir">
     <button onclick="fetchCommits()">Submit</button>
-    <pre id="output"></pre>
+    <button onclick="testThings()">Test</button>
+    <div id="output"></div>
     <div id="plot"></div> <!-- Add a div for the plot -->
     <canvas style="display: none;"></canvas> <!-- Hidden canvas for WebGPU -->
 
     <script>
-        function fetchCommits() {
-            initWebGPU2()
-            return;
+        function testThings() {
+            initWebGPU2();
+        }
 
+        function fetchCommits() {
             const repoUrl = document.getElementById('repo-url').value;
             const outputElement = document.getElementById('output');
 
@@ -27,6 +44,8 @@
                 outputElement.textContent = "Please enter a valid GitHub repo URL.";
                 return;
             }
+
+            outputElement.textContent = "Cloning repo...";
 
             fetch(`/clone?url=${encodeURIComponent(repoUrl)}`)
                 .then(response => response.json())
@@ -50,7 +69,69 @@
             return intersection.size / union.size;
         }
 
-        async function initWebGPU2(commitMap) {
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        async function computeDistanceMatrix(commitMap) {
+            console.log("starting on matrix")
+            const outputElement = document.getElementById('output');
+
+            const files = Object.keys(commitMap);
+            const N = files.length;
+            const distMatrix = new Float32Array(N * N);
+
+            // Precompute sets for each file
+            const sets = files.map(file => new Set(commitMap[file]));
+
+            // Precompute set sizes
+            const setSizes = sets.map(set => set.size);
+
+            for (let i = 0; i < N; i++) {
+                if (i % 200 === 0) {
+                    console.log("Processed", i);
+                    outputElement.textContent = `computing distance matrix: ${(N * i - (0.5 * i * (i + 1))) / (0.5 * N * (N - 1)) * 100}%` // TODO: math wrong
+
+                    // beyond cursed; without this the browser is too overwhelmed to update the text....
+                    await new Promise(r => setTimeout(r, 1));
+
+                    // outputElement.textContent = `computing distance matrix: ${i / N * 100}%`
+                }
+                for (let j = i + 1; j < N; j++) {
+                    const set1 = sets[i];
+                    const set2 = sets[j];
+
+                    const intersectionSize = [...set1].filter(x => set2.has(x)).length;
+                    const unionSize = setSizes[i] + setSizes[j] - intersectionSize;
+                    const similarity = intersectionSize / unionSize;
+
+                    const distance = 1 - similarity;
+                    distMatrix[i * N + j] = distance;
+                    distMatrix[j * N + i] = distance;
+                }
+                distMatrix[i * N + i] = 0;
+            }
+
+            console.log("matrix done");
+            return distMatrix;
+        }
+
+        function generateRandomExtensions(N) {
+            const extensions = ['.cpp', '.py'];
+            let result = [];
+
+            for (let i = 0; i < N; i++) {
+                const randomIndex = Math.floor(Math.random() * extensions.length);
+                result.push(extensions[randomIndex]);
+            }
+
+            return result;
+        }
+
+
+        async function initWebGPU() {
+            const canvas = document.querySelector("canvas");
+
             if (!navigator.gpu) {
                 throw new Error("WebGPU not supported on this browser.");
             }
@@ -60,8 +141,105 @@
             }
             const device = await adapter.requestDevice();
 
+            const doubleWGSL = await loadWGSL('double.wgsl');
+
+            const module = device.createShaderModule({
+                label: 'doubling compute module',
+                code: doubleWGSL,
+            });
+
+            const pipeline = device.createComputePipeline({
+                label: 'doubling compute pipeline',
+                layout: 'auto',
+                compute: {
+                    module,
+                },
+            });
+
+            const input = new Float32Array([1, 3, 5]);
+
+            // create a buffer on the GPU to hold our computation
+            // input and output
+            const workBuffer = device.createBuffer({
+                label: 'work buffer',
+                size: input.byteLength,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+            });
+            // Copy our input data to that buffer
+            device.queue.writeBuffer(workBuffer, 0, input);
+
+            // create a buffer on the GPU to get a copy of the results
+            const resultBuffer = device.createBuffer({
+                label: 'result buffer',
+                size: input.byteLength,
+                usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
+            });
+
+            // Setup a bindGroup to tell the shader which
+            // buffer to use for the computation
+            const bindGroup = device.createBindGroup({
+                label: 'bindGroup for work buffer',
+                layout: pipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: workBuffer } },
+                ],
+            });
+
+            console.log('input', input);
+
+            for (let n = 0; n < 3; n++) {
+                // Encode commands to do the computation
+                const encoder = device.createCommandEncoder({
+                    label: 'doubling encoder',
+                });
+                for (let i = 0; i < 5; i++) {
+                    const pass = encoder.beginComputePass({
+                        label: 'doubling compute pass',
+                    });
+                    pass.setPipeline(pipeline);
+                    pass.setBindGroup(0, bindGroup);
+                    pass.dispatchWorkgroups(input.length);
+                    pass.end();
+                }
+
+                // Encode a command to copy the results to a mappable buffer.
+                encoder.copyBufferToBuffer(workBuffer, 0, resultBuffer, 0, resultBuffer.size);
+
+                // Finish encoding and submit the commands
+                const commandBuffer = encoder.finish();
+                device.queue.submit([commandBuffer]);
+
+
+                // Read the results
+                await resultBuffer.mapAsync(GPUMapMode.READ);
+                const result = new Float32Array(resultBuffer.getMappedRange());
+
+                console.log('result', result);
+
+                resultBuffer.unmap();
+            }
+        }
+
+        async function initWebGPU2(commitMap) {
+            if (!navigator.gpu) {
+                throw new Error("WebGPU not supported on this browser.");
+            }
+            const adapter = await navigator.gpu.requestAdapter();
+            if (!adapter) {
+                throw new Error("No appropriate GPUAdapter found.");
+            }
+            // const device = await adapter.requestDevice();
+
+            const twoGig = 4e9
+            const required_limits = {};
+            // https://developer.mozilla.org/en-US/docs/Web/API/GPUDevice/limits
+            required_limits.maxStorageBufferBindingSize = twoGig;
+            required_limits.maxBufferSize = twoGig;
+            const device = await adapter.requestDevice({
+                "requiredLimits": required_limits
+            });
+
             const updateCoordsWGSL = await loadWGSL('update_coords.wgsl');
-            console.log(updateCoordsWGSL)
 
             const module = device.createShaderModule({
                 label: 'coord update compute module',
@@ -77,33 +255,33 @@
             });
 
 
-            // Create the distance matrix
+            let N;
+            let distMatrix;
+            let fileExtensions;
+            let filenames;
+            if (commitMap == undefined) {
+                N = 1000
+                distMatrix = new Float32Array(N * N).map(() => 1);
+                fileExtensions = generateRandomExtensions(N)
+                filenames = Array(N).fill("filename")
+            } else {
+                const files = Object.keys(commitMap);
+                N = Object.keys(commitMap).length;
+                console.log("N IS", N)
+                filenames = files
 
-            console.log("starting matrix")
+                fileExtensions = files.map(filename => {
+                    const baseName = filename.split('/').pop()
+                    const dotIndex = baseName.lastIndexOf('.');
+                    return dotIndex !== -1 ? baseName.slice(dotIndex) : 'no_extension';
 
-            // const files = Object.keys(commitMap);
-            // const N = files.length;
+                });
+                console.log(fileExtensions)
 
-            // console.log("N IS", N)
+                distMatrix = await computeDistanceMatrix(commitMap)
+            }
+            let coords = new Float32Array(N * 2).map(() => Math.random());
 
-            const N = 100
-            const distMatrix = new Float32Array(N * N);
-            // for (let i = 0; i < N; i++) {
-            //     for (let j = 0; j < N; j++) {
-            //         if (i === j) {
-            //             distMatrix[i * N + j] = 0;
-            //         } else {
-            //             const set1 = new Set(commitMap[files[i]]);
-            //             const set2 = new Set(commitMap[files[j]]);
-            //             distMatrix[i * N + j] = 1 - jaccardSimilarity(set1, set2);
-            //         }
-            //     }
-            // }
-            distMatrix.map(() => 1)
-
-            console.log("matrix done")
-
-            const coords = new Float32Array(N * 2).map(() => Math.random());
 
             const coordBuffer = device.createBuffer({
                 label: 'coord buffer',
@@ -120,14 +298,6 @@
             });
             device.queue.writeBuffer(distMatrixBuffer, 0, distMatrix);
 
-            params = new Float32Array([69, 0.01, N, 0]);
-            const paramsBuffer = device.createBuffer({
-                label: 'params buffer',
-                // size: 16,  // size of Params struct
-                size: params.byteLength,
-                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-            });
-            device.queue.writeBuffer(paramsBuffer, 0, params)
 
             const resultBuffer = device.createBuffer({
                 label: 'result buffer',
@@ -135,63 +305,53 @@
                 usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
             });
 
-            const bindGroup = device.createBindGroup({
-                label: 'bindGroup for work buffer',
-                layout: pipeline.getBindGroupLayout(0),
-                entries: [
-                    { binding: 0, resource: { buffer: coordBuffer } },
-                    { binding: 1, resource: { buffer: distMatrixBuffer } },
-                    { binding: 2, resource: { buffer: paramsBuffer } },
-                ],
-            });
+            initial_lr = 0.01
+            // final_lr = 0.0000001
+            final_lr = 0.00001
+            iterations_done = 0
+            num_iters = 10_000_000
+            iterations_in_batch = 1
+            max_iterations_in_batch = 100_000
 
-            console.log('before', coords.toString());
+            var startTime = performance.now()
 
-            // for (let batch = 0; batch < 20; batch++) {
-            //     const encoder = device.createCommandEncoder({
-            //         label: 'coord update encoder',
-            //     });
+            paramBuffers = []
+            bindGroups = []
+            for (let i = 0; i < max_iterations_in_batch; i++) {
+                const buffer = device.createBuffer({
+                    label: `uniforms for iteration ${i}`,
+                    size: 16,
+                    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+                });
+                paramBuffers.push(buffer)
 
-            //     let pivotIdx = Math.floor(Math.random() * N);
-            //     console.log("idx:", pivotIdx)
+                const bindGroup = device.createBindGroup({
+                    label: `bind group for iteration ${i}`,
+                    layout: pipeline.getBindGroupLayout(0),
+                    entries: [
+                        { binding: 0, resource: { buffer: coordBuffer } },
+                        { binding: 1, resource: { buffer: distMatrixBuffer } },
+                        { binding: 2, resource: { buffer: buffer } },
+                    ],
+                });
+                bindGroups.push(bindGroup)
 
-            //     for (let iteration = 0; iteration < 1; iteration++) {
-            //         // let pivotIdx = Math.floor(Math.random() * N);
-            //         let learningRate = 0.01
+            }
 
-            //         const params = new Float32Array([pivotIdx, learningRate, N, 0]);
-            //         device.queue.writeBuffer(paramsBuffer, 0, params);
-
-            //         const pass = encoder.beginComputePass({
-            //             label: 'coord update compute pass',
-            //         });
-            //         pass.setPipeline(pipeline);
-            //         pass.setBindGroup(0, bindGroup);
-            //         pass.dispatchWorkgroups(N);
-            //         pass.end();
-            //     }
-
-            //     encoder.copyBufferToBuffer(coordBuffer, 0, resultBuffer, 0, coordBuffer.size);
-
-            //     const commandBuffer = encoder.finish();
-            //     device.queue.submit([commandBuffer]);
-
-            //     await resultBuffer.mapAsync(GPUMapMode.READ);
-            //     const result = new Float32Array(resultBuffer.getMappedRange());
-
-            //     console.log('result', result.toString());
-            //     console.log("pos at idx:", result[2 * pivotIdx], result[2 * pivotIdx + 1])
-            //     plotPoints(result);
-
-            //     resultBuffer.unmap();
-            // }
-
-            for (let batch = 0; batch < 10000; batch++) {
-                // let pivotIdx = Math.floor(Math.random() * N);
-                // console.log("idx is", pivotIdx)
-                // let learningRate = 0.1
-                // const params = new Float32Array([pivotIdx, learningRate, N, pivotIdx]);
-                // device.queue.writeBuffer(paramsBuffer, 0, params);
+            const outputElement = document.getElementById('output');
+            const paramsArrayBuffer = new ArrayBuffer(16); // 4 * 4 bytes
+            const dataView = new DataView(paramsArrayBuffer);
+            dataView.setUint32(8, N, true);                 // Set N as u32 at offset 8
+            while (iterations_done < num_iters) {
+                console.log("at", iterations_done)
+                outputElement.textContent = `computing embeddings: ${iterations_done / num_iters * 100}%`
+                for (let i = 0; i < iterations_in_batch; i++) {
+                    const pivotIdx = Math.floor(Math.random() * N);
+                    const lr = final_lr + 0.5 * (initial_lr - final_lr) * (1 + Math.cos(Math.PI * (iterations_done + i) / num_iters));
+                    dataView.setUint32(0, pivotIdx, true);
+                    dataView.setFloat32(4, lr, true);
+                    device.queue.writeBuffer(paramBuffers[i], 0, paramsArrayBuffer);
+                }
 
                 const encoder = device.createCommandEncoder({
                     label: 'coord update encoder',
@@ -200,73 +360,113 @@
                     label: 'coord update compute pass',
                 });
                 pass.setPipeline(pipeline);
-                pass.setBindGroup(0, bindGroup);
-                pass.dispatchWorkgroups(N);
+                for (let i = 0; i < iterations_in_batch && iterations_done < num_iters; i++) {
+                    pass.setBindGroup(0, bindGroups[i]);
+                    pass.dispatchWorkgroups(N);
+                    iterations_done++
+                }
+                iterations_in_batch = Math.min(1.2 * iterations_in_batch, max_iterations_in_batch)
                 pass.end();
-
-                // encoder.copyBufferToBuffer(coordBuffer, 0, resultBuffer, 0, coordBuffer.size);
-
-                const commandBuffer = encoder.finish();
-
-                device.queue.submit([commandBuffer]);
-            }
-
-            // print results
-            {
-                const encoder = device.createCommandEncoder({
-                    label: 'coord update encoder',
-                });
-                // const pass = encoder.beginComputePass({
-                //     label: 'coord update compute pass',
-                // });
-                // pass.setPipeline(pipeline);
-                // pass.setBindGroup(0, bindGroup);
-                // pass.dispatchWorkgroups(N);
-                // pass.end();
 
                 encoder.copyBufferToBuffer(coordBuffer, 0, resultBuffer, 0, coordBuffer.size);
 
                 const commandBuffer = encoder.finish();
+
                 device.queue.submit([commandBuffer]);
 
+                // and now display results
                 await resultBuffer.mapAsync(GPUMapMode.READ);
                 const result = new Float32Array(resultBuffer.getMappedRange());
 
-                console.log('result', result.toString());
-
-                console.log("pos0: ", result[0], result[1])
-
-                plotPoints(result);
-
+                plotPoints(result, fileExtensions, filenames);
                 resultBuffer.unmap();
-
             }
 
+            var endTime = performance.now()
+
+            console.log(`Took ${endTime - startTime} milliseconds`)
+            console.log("ALL DONE")
         }
 
-        function plotPoints(coords) {
-            const x = [];
-            const y = [];
-            const text = [];
+        function plotPoints(coords, extensions, fileNames) {
+            console.log("filenames:", fileNames)
+            const extensionColors = getExtensionColors(extensions);
 
-            for (let i = 0; i < coords.length; i += 2) {
-                x.push(coords[i]);
-                y.push(coords[i + 1]);
-                text.push((i / 2).toString());  // logical index
+            const traces = [];
+            const colorMapping = {};
+
+            // Prepare data for each extension
+            for (const [ext, color] of Object.entries(extensionColors)) {
+                const indices = [];
+                for (let i = 0; i < extensions.length; i++) {
+                    if (extensions[i] === ext) {
+                        indices.push(i);
+                    }
+                }
+
+                if (indices.length > 0) {
+                    const x = indices.map(i => coords[2 * i]);
+                    const y = indices.map(i => coords[2 * i + 1]);
+                    const text = indices.map(i => fileNames[i]);
+
+                    const trace = {
+                        x: x,
+                        y: y,
+                        mode: 'markers',
+                        type: 'scattergl',
+                        text: text,
+                        hoverinfo: 'text',
+                        marker: {
+                            size: 5,
+                            color: color,
+                            opacity: 0.8
+                        },
+                        name: ext
+                    };
+                    traces.push(trace);
+                }
             }
 
-            const trace = {
-                x: x,
-                y: y,
-                mode: 'markers',
-                type: 'scatter',
-                text: text,
-                hoverinfo: 'text',
+            const layout = {
+                title: 'File Commit-Similarity Visualization',
+                xaxis: { title: 'MDS Dimension 1', constrain: 'domain' },
+                yaxis: { title: 'MDS Dimension 2', scaleanchor: 'x', scaleratio: 1 },
+                hovermode: 'closest',
+                paper_bgcolor: 'white',
+                plot_bgcolor: 'rgba(240,240,240,1)',
+                legend: { orientation: 'v' }
             };
 
-            const data = [trace];
+            Plotly.newPlot('plot', traces, layout);
 
-            Plotly.newPlot('plot', data);
+            window.onresize = function () {
+                Plotly.Plots.resize(document.getElementById('plot'));
+            };
+        }
+
+        function getExtensionColors(extensions) {
+            // Count files for each extension
+            const extCount = {};
+            extensions.forEach(ext => {
+                if (!extCount[ext]) {
+                    extCount[ext] = 0;
+                }
+                extCount[ext] += 1
+            });
+
+            // Sort extensions by count
+            const sortedExtensions = Object.keys(extCount).sort((a, b) => extCount[b] - extCount[a]);
+
+            // Use a Plotly color sequence
+            const colorSequence = ['#636EFA', '#EF553B', '#00CC96', '#AB63FA', '#FFA15A', '#19D3F3',
+                '#FF6692', '#B6E880', '#FF97FF', '#FECB52']
+
+            const extensionColors = {};
+            sortedExtensions.forEach((ext, i) => {
+                extensionColors[ext] = colorSequence[i % colorSequence.length];
+            });
+
+            return extensionColors;
         }
     </script>
 

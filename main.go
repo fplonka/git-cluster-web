@@ -1,18 +1,41 @@
 package main
 
 import (
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
+)
+
+const (
+	CacheDir      = "./cache"
+	CacheDuration = 7 * 24 * time.Hour // 1 week
 )
 
 func runGitCommand(repoPath string, command ...string) ([]byte, error) {
 	cmd := exec.Command("git", append([]string{"-C", repoPath}, command...)...)
 	return cmd.CombinedOutput()
+}
+
+func getCurrentFiles(repoPath string) (map[string]struct{}, error) {
+	output, err := runGitCommand(repoPath, "ls-tree", "-r", "HEAD", "--name-only")
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(output), "\n")
+	currentFiles := make(map[string]struct{}, len(lines))
+	for _, line := range lines {
+		if line != "" {
+			currentFiles[line] = struct{}{}
+		}
+	}
+	return currentFiles, nil
 }
 
 func cloneRepo(repoURL, tempDir string) error {
@@ -48,6 +71,16 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	repoHash := fmt.Sprintf("%x", md5.Sum([]byte(repoURL)))
+	cachePath := filepath.Join(CacheDir, repoHash)
+
+	// Check if the cache exists
+	if _, err := os.Stat(cachePath); err == nil {
+		fmt.Println("found in cache!")
+		http.ServeFile(w, r, cachePath)
+		return
+	}
+
 	tempDir, err := os.MkdirTemp("", "repo")
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to create temp dir: %v", err), http.StatusInternalServerError)
@@ -67,11 +100,26 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	commits := parseGitOutput(output)
+
+	currentFiles, err := getCurrentFiles(tempDir)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to get current files: %v", err), http.StatusInternalServerError)
+		return
+	}
+	for file, hashes := range commits {
+		if _, exists := currentFiles[file]; !exists || len(hashes) <= 1 {
+			delete(commits, file)
+		}
+	}
+
 	jsonOutput, err := json.Marshal(commits)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to marshal json: %v", err), http.StatusInternalServerError)
 		return
 	}
+
+	// Save the result to cache
+	os.WriteFile(cachePath, jsonOutput, 0644)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(jsonOutput)
@@ -88,6 +136,32 @@ func noCacheHandler(h http.Handler) http.Handler {
 		// Serve the request
 		h.ServeHTTP(w, r)
 	})
+}
+
+func cleanupOldCache() {
+	files, err := os.ReadDir(CacheDir)
+	if err != nil {
+		log.Printf("failed to read cache directory: %v", err)
+		return
+	}
+
+	now := time.Now()
+	for _, file := range files {
+		info, err := file.Info()
+		if err != nil {
+			log.Printf("failed to get file info: %v", err)
+			continue
+		}
+
+		if now.Sub(info.ModTime()) > CacheDuration {
+			os.RemoveAll(filepath.Join(CacheDir, file.Name()))
+		}
+	}
+}
+
+func init() {
+	os.MkdirAll(CacheDir, 0755)
+	cleanupOldCache()
 }
 
 func main() {
