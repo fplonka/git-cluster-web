@@ -8,21 +8,11 @@ struct Params {
     N: u32,
 }
 
-@compute @workgroup_size(1)
+@compute @workgroup_size(64)
 fn update_coords(@builtin(global_invocation_id) id: vec3<u32>) {
-    let j = id.x;
+    let rij = dist_matrix[params.pivot_idx * params.N + id.x];
+    let diff = coords[params.pivot_idx] - coords[id.x];
+    let dij = length(diff);
 
-
-    let xi = coords[params.pivot_idx];
-    let xj = coords[j];
-    let rij = dist_matrix[params.pivot_idx * params.N + j];
-
-    coords[0].x = rij;
-    coords[0].y = rij;
-    // coords[0].x = params.learning_rate;
-    // coords[0].y = f32(params.pivot_idx);
-    // coords[0].y = f32(params.N);
-
-    let dij = sqrt((xi.x - xj.x) * (xi.x - xj.x) + (xi.y - xj.y) * (xi.y - xj.y));
-    coords[j] -= (xi - xj) * params.learning_rate * (rij - dij) / (dij + 1e-6);
+    coords[id.x] -= params.learning_rate * (rij - dij) * (diff / (dij + 1e-6));
 }

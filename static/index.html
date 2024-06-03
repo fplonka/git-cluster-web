@@ -5,30 +5,39 @@
     <meta charset="UTF-8">
     <title>GitHub Repo Analyzer</title>
     <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-    <style>
-        html,
-        body {
-            margin: 0;
-            padding: 0;
-            height: 100%;
-            width: 100%;
-        }
-
-        #plot {
-            height: 100%;
-            width: 100%;
-            background-color: lightgray;
-        }
-    </style>
+    <link rel="stylesheet" href="output.css">
 </head>
 
-<body>
-    <h1>GitHub Repo Analyzer</h1>
-    <input type="text" id="repo-url" placeholder="Enter GitHub repo URL" value="https://github.com/elixir-lang/elixir">
-    <button onclick="fetchCommits()">Submit</button>
-    <div id="output"></div>
-    <div id="plot"></div> <!-- Add a div for the plot -->
-    <canvas style="display: none;"></canvas> <!-- Hidden canvas for WebGPU -->
+<body class="bg-zinc-100 flex justify-center items-center h-screen m-0">
+    <div class="shadow-md max-w-screen-lg bg-white border-zinc-100 w-full flex flex-col h-full">
+        <div class="px-6 md:px-16  pt-6 md:pt-10">
+            <h1 class="text-2xl font-bold mb-2">git-cluster w/ WebGPU</h1>
+            <div class="mb-2"><span class="font-bold">Visualize a Git repo based on which files are often changed
+                    together in
+                    commits.</span> Read more
+                about how it works <a href="https://github.com/fplonka/git-cluster-web">here</a> or view a gallery of
+                visualisaions for some popular repos <a href="https://fplonka.dev/git-cluster">here</a>.
+            </div>
+            <div class="mb-4">
+                Thanks to the magic of WebGPU, the number-crunching for the visualisation is very fast. WebGPU is
+                enabled by default in Chrome, in FireFox it's enabled
+                in Nightly builds. In Safari it's a work in progress.
+            </div>
+            <div class="flex items-center">
+                <input type="text" id="repo-url" placeholder="https://github.com/git/git"
+                    class="border border-gray-300 p-2 flex-grow mr-2">
+                <button onclick="fetchCommits()" class="bg-blue-500 text-white p-2 rounded-md">Submit</button>
+            </div>
+            <div id="output" class="text-gray-700 mt-4"></div>
+        </div>
+        <div id="plot" class="flex-grow bg-white"></div>
+        <div id="progress-bar-wrapper" class="w-full px-8 pb-6 hidden">
+            <div id="progress-bar-container" class="w-full bg-gray-300 h-2">
+                <div id="progress-bar" class="bg-blue-500 h-2" style="width: 0%"></div>
+            </div>
+        </div>
+    </div>
+
 
     <script>
         function fetchCommits() {
@@ -40,7 +49,7 @@
                 return;
             }
 
-            outputElement.textContent = "Cloning repo...";
+            outputElement.textContent = "Cloning the repo...";
 
             fetch(`/clone?url=${encodeURIComponent(repoUrl)}`)
                 .then(response => response.json())
@@ -68,47 +77,42 @@
             return new Promise(resolve => setTimeout(resolve, ms));
         }
 
-        async function computeDistanceMatrix(commitMap) {
-            console.log("starting on matrix")
-            const outputElement = document.getElementById('output');
+        function convertCommitMapToPackedIntArray(commitMap) {
+            // Step 1: Create a map from commit strings to unique integers
+            const commitStringToInt = {};
+            let nextInt = 0;
 
-            const files = Object.keys(commitMap);
-            const N = files.length;
-            const distMatrix = new Float32Array(N * N);
-
-            // Precompute sets for each file
-            const sets = files.map(file => new Set(commitMap[file]));
-
-            // Precompute set sizes
-            const setSizes = sets.map(set => set.size);
-
-            for (let i = 0; i < N; i++) {
-                if (i % 200 === 0) {
-                    console.log("Processed", i);
-                    outputElement.textContent = `computing distance matrix: ${(N * i - (0.5 * i * (i + 1))) / (0.5 * N * (N - 1)) * 100}%` // TODO: math wrong
-
-                    // beyond cursed; without this the browser is too overwhelmed to update the text....
-                    await new Promise(r => setTimeout(r, 1));
-
-                    // outputElement.textContent = `computing distance matrix: ${i / N * 100}%`
+            // Populate the map with unique integers for each commit string
+            for (const commits of Object.values(commitMap)) {
+                for (const commit of commits) {
+                    if (!(commit in commitStringToInt)) {
+                        commitStringToInt[commit] = nextInt++;
+                    }
                 }
-                for (let j = i + 1; j < N; j++) {
-                    const set1 = sets[i];
-                    const set2 = sets[j];
-
-                    const intersectionSize = [...set1].filter(x => set2.has(x)).length;
-                    const unionSize = setSizes[i] + setSizes[j] - intersectionSize;
-                    const similarity = intersectionSize / unionSize;
-
-                    const distance = 1 - similarity;
-                    distMatrix[i * N + j] = distance;
-                    distMatrix[j * N + i] = distance;
-                }
-                distMatrix[i * N + i] = 0;
             }
 
-            console.log("matrix done");
-            return distMatrix;
+            // Step 2: Create the 2D array 'entries' with integer representations
+            const entries = Object.values(commitMap).map(commits =>
+                commits.map(commit => commitStringToInt[commit])
+            );
+
+            // Step 3: Sort each entries[i] list and add -1 to the end
+            const packedEntries = [];
+            const startIndices = new Int32Array(Object.keys(commitMap).length);
+            let currentIndex = 0;
+
+            entries.forEach((entry, i) => {
+                startIndices[i] = currentIndex;
+                entry.sort((a, b) => a - b);
+                entry.push(-1);
+                packedEntries.push(...entry);
+                currentIndex += entry.length;
+            });
+
+            // Step 4: Convert the packedEntries to an Int32Array
+            const int32Array = new Int32Array(packedEntries);
+
+            return { int32Array, startIndices };
         }
 
         async function computeDistanceMatrixRowByRow(commitMap, device, distMatrixBuffer) {
@@ -130,7 +134,7 @@
             for (let i = 0; i < N; i++) {
                 if (i % 200 === 0) {
                     console.log("Processed", i);
-                    outputElement.textContent = `computing distance matrix: ${(N * i - (0.5 * i * (i + 1))) / (0.5 * N * (N - 1)) * 100}%`;
+                    outputElement.textContent = `computing distance matrix: ${i / N * 100}%`;
 
                     // Update the UI to avoid browser freezing
                     await new Promise(r => setTimeout(r, 1));
@@ -171,6 +175,79 @@
             return result;
         }
 
+        async function computeDistanceMatrixOnGPU(commitMap, device, distMatrixBuffer) {
+            console.log("starting on matrix");
+
+            const files = Object.keys(commitMap);
+            const N = files.length;
+
+            // Convert commitMap to packed entries and start indices
+            const { int32Array: entries, startIndices } = convertCommitMapToPackedIntArray(commitMap);
+
+            // Create GPU buffers for entries
+            const entriesBuffer = device.createBuffer({
+                label: 'entries buffer',
+                size: entries.byteLength,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+            });
+            device.queue.writeBuffer(entriesBuffer, 0, entries);
+
+            // Create GPU buffers for start indices
+            const startIndicesBuffer = device.createBuffer({
+                label: 'startIndices buffer',
+                size: startIndices.byteLength,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+            });
+            device.queue.writeBuffer(startIndicesBuffer, 0, startIndices);
+
+            // Load and compile WGSL shader
+            const shaderCode = await loadWGSL('compute_dist_matrix.wgsl')
+            const computeShaderModule = device.createShaderModule({
+                code: shaderCode
+            });
+
+            // Create pipeline
+            const computePipeline = device.createComputePipeline({
+                // layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
+                layout: 'auto',
+                compute: {
+                    module: computeShaderModule,
+                    entryPoint: 'main',
+                },
+            });
+
+            const bindGroup = device.createBindGroup({
+                // layout: bindGroupLayout,
+                layout: computePipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: entriesBuffer } },
+                    { binding: 1, resource: { buffer: startIndicesBuffer } },
+                    { binding: 2, resource: { buffer: distMatrixBuffer } },
+                ],
+            });
+
+            // Create command encoder and dispatch compute shader
+            const commandEncoder = device.createCommandEncoder();
+            const passEncoder = commandEncoder.beginComputePass();
+            passEncoder.setPipeline(computePipeline);
+            passEncoder.setBindGroup(0, bindGroup);
+
+            // Calculate the total number of threads needed
+            const workgroupSize = 8;
+            const numWorkgroups = Math.ceil(N / workgroupSize);
+            passEncoder.dispatchWorkgroups(numWorkgroups, numWorkgroups, 1);
+
+
+            // Dispatch workgroups
+            passEncoder.dispatchWorkgroups(numWorkgroups);
+            passEncoder.end();
+
+            // Submit commands
+            device.queue.submit([commandEncoder.finish()]);
+
+            await device.queue.onSubmittedWorkDone();
+        }
+
         async function initWebGPU2(commitMap) {
             if (!navigator.gpu) {
                 throw new Error("WebGPU not supported on this browser.");
@@ -180,9 +257,10 @@
                 throw new Error("No appropriate GPUAdapter found.");
             }
 
+
             let N = Object.keys(commitMap).length;
-            console.log("max buffer size:", adapter.limits.maxBufferSize)
-            console.log("max storage buffer binding size:", adapter.limits.maxStorageBufferBindingSize)
+            // console.log("max buffer size:", adapter.limits.maxBufferSize)
+            // console.log("max storage buffer binding size:", adapter.limits.maxStorageBufferBindingSize)
             // 4*N*N for the distance matrix buffer
             const requiredMemory = Math.min(4 * N * N, adapter.limits.maxBufferSize, adapter.limits.maxStorageBufferBindingSize)
             const required_limits = {};
@@ -205,11 +283,9 @@
                 keys.splice(randomIndex, 1);
             }
 
-
             const filenames = Object.keys(commitMap);
             N = Object.keys(commitMap).length;
             console.log("N IS", N)
-            console.log("NEED:", requiredMemory)
 
             const fileExtensions = filenames.map(filename => {
                 const baseName = filename.split('/').pop()
@@ -222,7 +298,7 @@
 
             });
 
-            let coords = new Float32Array(N * 2).map(() => Math.random());
+            let coords = new Float32Array(N * 2).map(() => Math.random() - 0.5);
 
             const updateCoordsWGSL = await loadWGSL('update_coords.wgsl');
 
@@ -244,7 +320,6 @@
                 size: coords.byteLength,
                 usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
             });
-
             device.queue.writeBuffer(coordBuffer, 0, coords);
 
             const distMatrixBuffer = device.createBuffer({
@@ -252,9 +327,10 @@
                 size: 4 * N * N,
                 usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
             });
-            await computeDistanceMatrixRowByRow(commitMap, device, distMatrixBuffer);
-
-            // device.queue.writeBuffer(distMatrixBuffer, 0, distMatrix);
+            const outputElement = document.getElementById('output');
+            outputElement.textContent = "Computing distance matrix...";
+            // await computeDistanceMatrixRowByRow(commitMap, device, distMatrixBuffer);
+            await computeDistanceMatrixOnGPU(commitMap, device, distMatrixBuffer);
 
             const resultBuffer = device.createBuffer({
                 label: 'result buffer',
@@ -262,13 +338,27 @@
                 usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
             });
 
-            initial_lr = 0.01
+            // initial_lr = 0.02
+            initial_lr = 0.03
             // final_lr = 0.0000001
-            final_lr = 0.00001
+            final_lr = 0.001
             iterations_done = 0
-            num_iters = 2_000_000
-            iterations_in_batch = 1
-            max_iterations_in_batch = 100_000
+            // num_iters = 10_000_000
+            // num_iters = Math.pow(N, 1.55) * 2
+            // num_iters = 300 * N;
+            num_iters = 150 * N;
+            console.log("doing", num_iters, "iterations")
+
+            min_iterations_in_batch = 1
+            max_iterations_in_batch = 50_000
+
+            iterations_in_batch = min_iterations_in_batch
+
+            console.log("TEST:", Math.sqrt(num_iters))
+
+            // multiplier = Math.pow(max_iterations_in_batch / min_iterations_in_batch, Math.sqrt(num_iters) / 10000)
+            // console.log("multiplier is:", multiplier)
+            multiplier = 1.15
 
             var startTime = performance.now()
 
@@ -295,16 +385,21 @@
 
             }
 
-            const outputElement = document.getElementById('output');
+            outputElement.style.display = 'none';
+
             const paramsArrayBuffer = new ArrayBuffer(16); // 4 * 4 bytes
             const dataView = new DataView(paramsArrayBuffer);
             dataView.setUint32(8, N, true);                 // Set N as u32 at offset 8
             while (iterations_done < num_iters) {
                 console.log("at", iterations_done)
-                outputElement.textContent = `computing embeddings: ${iterations_done / num_iters * 100}%`
+                // outputElement.textContent = `computing embeddings: ${iterations_done / num_iters * 100}%`
+                updateProgressBar(iterations_done / num_iters * 100);
                 for (let i = 0; i < iterations_in_batch; i++) {
                     const pivotIdx = Math.floor(Math.random() * N);
-                    const lr = final_lr + 0.5 * (initial_lr - final_lr) * (1 + Math.cos(Math.PI * (iterations_done + i) / num_iters));
+                    // const lr = final_lr + 0.5 * (initial_lr - final_lr) * (1 + Math.cos(Math.PI * (iterations_done + i) / num_iters));
+                    // const lr = initial_lr + (final_lr - initial_lr) * ((iterations_done + i) / num_iters);
+                    const lr = initial_lr * Math.pow(final_lr / initial_lr, (iterations_done + i) / num_iters);
+
                     dataView.setUint32(0, pivotIdx, true);
                     dataView.setFloat32(4, lr, true);
                     device.queue.writeBuffer(paramBuffers[i], 0, paramsArrayBuffer);
@@ -319,10 +414,16 @@
                 pass.setPipeline(pipeline);
                 for (let i = 0; i < iterations_in_batch && iterations_done < num_iters; i++) {
                     pass.setBindGroup(0, bindGroups[i]);
-                    pass.dispatchWorkgroups(N);
+                    pass.dispatchWorkgroups(Math.ceil(N / 64));
                     iterations_done++
                 }
-                iterations_in_batch = Math.min(1.2 * iterations_in_batch, max_iterations_in_batch)
+                // const lr = final_lr + 0.5 * (initial_lr - final_lr) * (1 + Math.cos(Math.PI * (iterations_done) / num_iters));
+                // iterations_in_batch = Math.min(25 / lr, max_iterations_in_batch)
+                iterations_in_batch = Math.min(multiplier * iterations_in_batch, max_iterations_in_batch)
+                // iterations_in_batch = min_iterations_in_batch + (max_iterations_in_batch - min_iterations_in_batch) * (iterations_done / num_iters);
+                // iterations_in_batch = min_iterations_in_batch * Math.pow(max_iterations_in_batch / min_iterations_in_batch, iterations_done / num_iters);
+
+
                 pass.end();
 
                 encoder.copyBufferToBuffer(coordBuffer, 0, resultBuffer, 0, coordBuffer.size);
@@ -332,12 +433,14 @@
                 device.queue.submit([commandBuffer]);
 
                 // and now display results
+                // TODO: this is the perf bottleneck, 3x faster without these calls
                 await resultBuffer.mapAsync(GPUMapMode.READ);
                 const result = new Float32Array(resultBuffer.getMappedRange());
-
                 plotPoints(result, fileExtensions, filenames);
                 resultBuffer.unmap();
             }
+
+            updateProgressBar(100);
 
             var endTime = performance.now()
 
@@ -373,9 +476,9 @@
                         text: text,
                         hoverinfo: 'text',
                         marker: {
-                            size: 5,
+                            size: 7,
                             color: color,
-                            opacity: 0.8
+                            opacity: 0.7
                         },
                         name: ext
                     };
@@ -384,20 +487,23 @@
             }
 
             const layout = {
+                autosize: true,
                 title: 'File Commit-Similarity Visualization',
                 xaxis: { title: 'MDS Dimension 1', constrain: 'domain' },
                 yaxis: { title: 'MDS Dimension 2', scaleanchor: 'x', scaleratio: 1 },
                 hovermode: 'closest',
                 paper_bgcolor: 'white',
                 plot_bgcolor: 'rgba(240,240,240,1)',
-                legend: { orientation: 'v' }
+                legend: { orientation: window.innerHeight < window.innerWidth ? 'v' : 'h' }
             };
 
-            Plotly.newPlot('plot', traces, layout);
+            var config = { responsive: true }
 
-            window.onresize = function () {
-                Plotly.Plots.resize(document.getElementById('plot'));
-            };
+            Plotly.newPlot('plot', traces, layout, config);
+
+            // window.onresize = function () {
+            //     Plotly.Plots.resize(document.getElementById('plot'));
+            // };
         }
 
         function getExtensionColors(extensions) {
@@ -423,6 +529,19 @@
             });
 
             return extensionColors;
+        }
+
+        function updateProgressBar(percentage) {
+            // const progressBar = document.getElementById('progress-bar');
+            // if (percentage === 100) {
+            //     document.getElementById('progress-bar-wrapper').style.display = 'none';
+            //     Plotly.Plots.resize(document.getElementById('plot'));
+
+            // } else {
+            //     document.getElementById('progress-bar-wrapper').style.display = 'block';
+            // }
+            // progressBar.style.width = percentage + '%';
+            // progressBar.textContent = percentage + '%';
         }
     </script>
 
