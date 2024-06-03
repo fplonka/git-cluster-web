@@ -161,7 +161,7 @@ func cleanupOldCache() {
 
 func init() {
 	os.MkdirAll(CacheDir, 0755)
-	cleanupOldCache()
+	// cleanupOldCache()
 }
 
 func main() {
@@ -169,5 +169,5 @@ func main() {
 	// Serve files without caching
 	http.Handle("/", noCacheHandler(http.FileServer(http.Dir("./static"))))
 	fmt.Println("Server is listening on port 8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Fatal(http.ListenAndServe(":8282", nil))
 }
