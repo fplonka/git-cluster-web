@@ -10,7 +10,7 @@
 
 <body class="bg-zinc-100 flex justify-center items-center h-screen m-0">
     <div class="shadow-md max-w-screen-lg bg-white border-zinc-100 w-full flex flex-col h-full">
-        <div class="px-6 md:px-16  pt-6 md:pt-10">
+        <div class="px-6 md:px-16  pt-2 md:pt-4">
             <h1 class="text-2xl font-bold mb-2">git-cluster w/ WebGPU</h1>
             <div class="mb-2"><span class="font-bold">Visualize a Git repo based on which files are often changed
                     together in
@@ -18,14 +18,14 @@
                 about how it works <a href="https://github.com/fplonka/git-cluster-web">here</a> or view a gallery of
                 visualisaions for some popular repos <a href="https://fplonka.dev/git-cluster">here</a>.
             </div>
-            <div class="mb-4">
+            <div class="mb-2">
                 Thanks to the magic of WebGPU, the number-crunching for the visualisation is very fast. WebGPU is
                 enabled by default in Chrome, in FireFox it's enabled
                 in Nightly builds. In Safari it's a work in progress.
             </div>
             <div class="flex items-center">
                 <input type="text" id="repo-url" placeholder="https://github.com/git/git"
-                    class="border border-gray-300 p-2 flex-grow mr-2">
+                    value="https://github.com/git/git" class="border border-gray-300 p-2 flex-grow mr-2">
                 <button onclick="fetchCommits()" class="bg-blue-500 text-white p-2 rounded-md">Submit</button>
             </div>
             <div id="output" class="text-gray-700 mt-4"></div>
@@ -43,6 +43,7 @@
         function fetchCommits() {
             const repoUrl = document.getElementById('repo-url').value;
             const outputElement = document.getElementById('output');
+            outputElement.style.display = 'block';
 
             if (!repoUrl) {
                 outputElement.textContent = "Please enter a valid GitHub repo URL.";
@@ -341,7 +342,7 @@
             // initial_lr = 0.02
             initial_lr = 0.03
             // final_lr = 0.0000001
-            final_lr = 0.001
+            final_lr = 0.0005
             iterations_done = 0
             // num_iters = 10_000_000
             // num_iters = Math.pow(N, 1.55) * 2
@@ -488,13 +489,24 @@
 
             const layout = {
                 autosize: true,
-                title: 'File Commit-Similarity Visualization',
-                xaxis: { title: 'MDS Dimension 1', constrain: 'domain' },
-                yaxis: { title: 'MDS Dimension 2', scaleanchor: 'x', scaleratio: 1 },
+                title: false,
+                xaxis: { title: false, constrain: 'domain' },
+                yaxis: { title: false, scaleanchor: 'x', scaleratio: 1 },
                 hovermode: 'closest',
                 paper_bgcolor: 'white',
                 plot_bgcolor: 'rgba(240,240,240,1)',
-                legend: { orientation: window.innerHeight < window.innerWidth ? 'v' : 'h' }
+                legend: { orientation: window.innerHeight < window.innerWidth ? 'v' : 'h' },
+                margin: {
+                    l: 0,
+                    r: 0,
+                    b: 40,
+                    t: 40,
+                    pad: 0
+                },
+
+
+                // pad: { l: 1, r: 1, t: 1, b: 1 } // Set left, right, top, and bottom margins to 30 pixels each
+
             };
 
             var config = { responsive: true }
