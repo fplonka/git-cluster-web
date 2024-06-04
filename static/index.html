@@ -51,7 +51,7 @@
 
             outputElement.textContent = "Cloning the repo...";
 
-            fetch(`/clone?url=${encodeURIComponent(repoUrl)}`)
+            fetch(`clone?url=${encodeURIComponent(repoUrl)}`)
                 .then(response => response.json())
                 .then(data => {
                     // outputElement.textContent = JSON.stringify(data, null, 2);
@@ -63,7 +63,7 @@
         }
 
         async function loadWGSL(name) {
-            const response = await fetch('/' + name);
+            const response = await fetch(name);
             return await response.text();
         }
 

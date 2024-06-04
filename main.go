@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
@@ -18,13 +19,28 @@ const (
 	CacheDuration = 7 * 24 * time.Hour // 1 week
 )
 
-func runGitCommand(repoPath string, command ...string) ([]byte, error) {
-	cmd := exec.Command("git", append([]string{"-C", repoPath}, command...)...)
-	return cmd.CombinedOutput()
+func runGitCommand(print bool, command ...string) ([]byte, error) {
+	cmd := exec.Command("git", command...)
+
+	// tell the command to print its output to stdout
+	if print {
+		var stdBuffer bytes.Buffer
+
+		cmd.Stdout = &stdBuffer
+		cmd.Stderr = os.Stderr
+
+		if err := cmd.Run(); err != nil {
+			log.Panic(err)
+		}
+
+		return stdBuffer.Bytes(), nil
+	} else {
+		return cmd.CombinedOutput()
+	}
 }
 
 func getCurrentFiles(repoPath string) (map[string]struct{}, error) {
-	output, err := runGitCommand(repoPath, "ls-tree", "-r", "HEAD", "--name-only")
+	output, err := runGitCommand(false, "-C", repoPath, "ls-tree", "-r", "HEAD", "--name-only")
 	if err != nil {
 		return nil, err
 	}
@@ -39,16 +55,11 @@ func getCurrentFiles(repoPath string) (map[string]struct{}, error) {
 }
 
 func cloneRepo(repoURL, tempDir string) error {
-	fmt.Println("cloning to", tempDir)
-	cmd := exec.Command("git", "clone", "--no-checkout", repoURL, tempDir)
-	output, err := cmd.CombinedOutput()
+	output, err := runGitCommand(true, "clone", "--no-checkout", repoURL, tempDir)
 	if err != nil {
 		fmt.Println("ERR:", err)
 		return fmt.Errorf("failed to clone repo: %v, output: %s", err, output)
 	}
-	fmt.Println("cloning done")
-	fmt.Println("output:", string(output))
-	fmt.Println()
 	return nil
 }
 
@@ -95,8 +106,9 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("failed to clone repo: %v", err), http.StatusInternalServerError)
 		return
 	}
+	fmt.Println("cloning done...")
 
-	output, err := runGitCommand(tempDir, "log", "--pretty=format:__commit__:%H", "--name-only")
+	output, err := runGitCommand(false, "-C", tempDir, "log", "--pretty=format:__commit__:%H", "--name-only")
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to run git command: %v", err), http.StatusInternalServerError)
 		return
@@ -121,6 +133,8 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("failed to marshal json: %v", err), http.StatusInternalServerError)
 		return
 	}
+
+	fmt.Println()
 
 	// Save the result to cache
 	os.WriteFile(cachePath, jsonOutput, 0644)
