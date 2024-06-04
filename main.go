@@ -40,12 +40,15 @@ func getCurrentFiles(repoPath string) (map[string]struct{}, error) {
 
 func cloneRepo(repoURL, tempDir string) error {
 	fmt.Println("cloning to", tempDir)
-	cmd := exec.Command("git", "clone", repoURL, tempDir)
+	cmd := exec.Command("git", "clone", "--no-checkout", repoURL, tempDir)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		fmt.Println("ERR:", err)
 		return fmt.Errorf("failed to clone repo: %v, output: %s", err, output)
 	}
 	fmt.Println("cloning done")
+	fmt.Println("output:", string(output))
+	fmt.Println()
 	return nil
 }
 
@@ -100,6 +103,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	commits := parseGitOutput(output)
+	fmt.Println("output parsed")
 
 	currentFiles, err := getCurrentFiles(tempDir)
 	if err != nil {
