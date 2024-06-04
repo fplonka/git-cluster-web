@@ -1,4 +1,3 @@
 # git-cluster-web
 
-## TODO 
-- remove redundant matrix rows??
+browser version of [git-cluster](https://github.com/fplonka/git-cluster), running on webgpu.
