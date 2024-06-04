@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/md5"
 	"encoding/json"
@@ -39,6 +40,42 @@ func runGitCommand(print bool, command ...string) ([]byte, error) {
 	}
 }
 
+// create the commit map given the dir we cloned the repo to
+func createCommitMap(tempDir string) (map[string][]string, error) {
+	cmd := exec.Command("git", "-C", tempDir, "log", "--pretty=format:__commit__:%H", "--name-only")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stdout pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start command: %w", err)
+	}
+
+	commits := make(map[string][]string)
+	scanner := bufio.NewScanner(stdout)
+	var currentCommit string
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "__commit__:") {
+			currentCommit = strings.TrimPrefix(line, "__commit__:")
+		} else if line != "" {
+			commits[line] = append(commits[line], currentCommit)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error reading command output: %w", err)
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return nil, fmt.Errorf("command execution failed: %w", err)
+	}
+
+	return commits, nil
+}
+
 func getCurrentFiles(repoPath string) (map[string]struct{}, error) {
 	output, err := runGitCommand(false, "-C", repoPath, "ls-tree", "-r", "HEAD", "--name-only")
 	if err != nil {
@@ -61,21 +98,6 @@ func cloneRepo(repoURL, tempDir string) error {
 		return fmt.Errorf("failed to clone repo: %v, output: %s", err, output)
 	}
 	return nil
-}
-
-func parseGitOutput(output []byte) map[string][]string {
-	lines := strings.Split(string(output), "\n")
-	commits := make(map[string][]string)
-	var currentCommit string
-
-	for _, line := range lines {
-		if strings.HasPrefix(line, "__commit__:") {
-			currentCommit = strings.Split(line, "__commit__:")[1]
-		} else if line != "" {
-			commits[line] = append(commits[line], currentCommit)
-		}
-	}
-	return commits
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -108,13 +130,11 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Println("cloning done...")
 
-	output, err := runGitCommand(false, "-C", tempDir, "log", "--pretty=format:__commit__:%H", "--name-only")
+	commits, err := createCommitMap(tempDir)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to run git command: %v", err), http.StatusInternalServerError)
-		return
+		http.Error(w, fmt.Sprintf("failed to parse repo data: %v", err), http.StatusInternalServerError)
+		fmt.Printf("PARSING ERROR?!: %v\n", err)
 	}
-
-	commits := parseGitOutput(output)
 	fmt.Println("output parsed")
 
 	currentFiles, err := getCurrentFiles(tempDir)

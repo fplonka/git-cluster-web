@@ -24,3 +24,5 @@ go.work.sum
 tmp.md
 cache
 .DS_Store
+
+git-cluster-web

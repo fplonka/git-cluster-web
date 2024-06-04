@@ -16,7 +16,7 @@
                     together in
                     commits.</span> Read more
                 about how it works <a href="https://github.com/fplonka/git-cluster-web">here</a> or view a gallery of
-                visualisaions for some popular repos <a href="https://fplonka.dev/git-cluster">here</a>.
+                visualisations for some popular repos <a href="https://fplonka.dev/git-cluster">here</a>.
             </div>
             <div class="mb-2">
                 Thanks to the magic of WebGPU, the number-crunching for the visualisation is very fast. WebGPU is
@@ -51,6 +51,7 @@
             }
 
             outputElement.textContent = "Cloning the repo...";
+            setTimeout(function () { outputElement.textContent = "Cloning the repo... This can take a while, but results are cached afterwards, so you can try again with this repo later."; }, 5000);
 
             fetch(`clone?url=${encodeURIComponent(repoUrl)}`)
                 .then(response => response.json())

@@ -69,6 +69,5 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let score: f32 = jaccard(row1Start, row2Start);
         let distance: f32 = 1.0 - score + 1e-8;
         distMatrix[i * N + j] = distance;
-        distMatrix[j * N + i] = distance;
     }
 }
